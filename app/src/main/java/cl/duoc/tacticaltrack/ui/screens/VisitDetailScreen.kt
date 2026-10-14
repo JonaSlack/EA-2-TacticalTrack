@@ -21,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -29,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import cl.duoc.tacticaltrack.ui.components.VisitStatusChips
 import cl.duoc.tacticaltrack.viewmodel.VisitViewModel
+import cl.duoc.tacticaltrack.viewmodel.VisitDetailUiState
 import coil.compose.AsyncImage
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -41,8 +43,11 @@ fun VisitDetailScreen(
     viewModel: VisitViewModel,
     onBack: () -> Unit
 ) {
-    val flow = remember(visitId) { viewModel.observeVisit(visitId) }
-    val visit by flow.collectAsStateWithLifecycle(initialValue = null)
+    val detailState = key(visitId, viewModel) {
+        val flow = remember(visitId, viewModel) { viewModel.observeVisitDetail(visitId) }
+        val state by flow.collectAsStateWithLifecycle(initialValue = VisitDetailUiState.Loading)
+        state
+    }
 
     Scaffold(
         topBar = {
@@ -56,10 +61,10 @@ fun VisitDetailScreen(
             )
         }
     ) { innerPadding ->
-        val current = visit
+        val current = (detailState as? VisitDetailUiState.Found)?.visit
         if (current == null) {
             Text(
-                "Cargando visita...",
+                if (detailState == VisitDetailUiState.NotFound) "Visita no encontrada" else "Cargando visita...",
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)

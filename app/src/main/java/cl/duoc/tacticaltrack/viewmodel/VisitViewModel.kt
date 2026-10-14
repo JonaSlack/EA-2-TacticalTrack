@@ -16,6 +16,16 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
+import java.util.concurrent.atomic.AtomicBoolean
+
+sealed interface VisitDetailUiState {
+    data object Loading : VisitDetailUiState
+    data object NotFound : VisitDetailUiState
+    data class Found(val visit: VisitEntity) : VisitDetailUiState
+}
 
 data class VisitErrors(
     val point: String? = null,
@@ -42,6 +52,7 @@ data class VisitFormUiState(
     val isLocating: Boolean = false,
     val isSaving: Boolean = false,
     val saveSuccess: Boolean = false,
+    val saveError: String? = null,
     val locationMessage: String = "",
     val errors: VisitErrors = VisitErrors()
 )
@@ -60,6 +71,7 @@ class VisitViewModel(
     val equipmentStatuses = listOf("Operativo", "Operativo con observaciones", "Con falla")
 
     private val _form = MutableStateFlow(VisitFormUiState())
+    private val saveInProgress = AtomicBoolean(false)
     val form: StateFlow<VisitFormUiState> = _form.asStateFlow()
 
     private val _operatorName = MutableStateFlow("Usuario Demo")
@@ -84,10 +96,18 @@ class VisitViewModel(
 
     fun onPointSelected(pointId: String) {
         _form.update {
+            if (it.pointId == pointId) return@update it
             it.copy(
                 pointId = pointId,
                 assetId = "",
-                errors = it.errors.copy(point = null, asset = null)
+                latitude = null,
+                longitude = null,
+                locationAccuracyMeters = null,
+                distanceToPointMeters = null,
+                presenceVerified = false,
+                isLocating = false,
+                locationMessage = "",
+                errors = it.errors.copy(point = null, asset = null, location = null)
             )
         }
     }
@@ -203,38 +223,52 @@ class VisitViewModel(
     }
 
     fun saveVisit(onSaved: (Long) -> Unit) {
-        if (!validateBeforeEvidence() || !validateEvidence()) return
-
-        val s = _form.value
-        val point = DemoCatalog.pointById(s.pointId) ?: return
-        val asset = DemoCatalog.assetById(s.assetId) ?: return
-
-        _form.update { it.copy(isSaving = true, saveSuccess = false) }
+        if (!saveInProgress.compareAndSet(false, true)) return
 
         viewModelScope.launch {
-            val id = repository.saveVisit(
-                VisitEntity(
-                    operatorName = _operatorName.value,
-                    operatorRole = _operatorRole.value,
-                    pointId = point.id,
-                    pointName = point.name,
-                    assetId = asset.id,
-                    assetCode = asset.code,
-                    assetType = asset.type,
-                    visitType = s.visitType,
-                    equipmentStatus = s.equipmentStatus,
-                    observations = s.observations.trim(),
-                    photoUri = s.photoUri,
-                    latitude = s.latitude!!,
-                    longitude = s.longitude!!,
-                    locationAccuracyMeters = s.locationAccuracyMeters,
-                    distanceToPointMeters = s.distanceToPointMeters ?: Float.MAX_VALUE,
-                    presenceVerified = s.presenceVerified,
-                    timestamp = System.currentTimeMillis()
+            if (!validateBeforeEvidence() || !validateEvidence()) return@launch
+
+            val s = _form.value
+            val point = DemoCatalog.pointById(s.pointId) ?: return@launch
+            val asset = DemoCatalog.assetById(s.assetId) ?: return@launch
+
+            _form.update { it.copy(isSaving = true, saveSuccess = false, saveError = null) }
+
+            val id = try {
+                repository.saveVisit(
+                    VisitEntity(
+                        operatorName = _operatorName.value,
+                        operatorRole = _operatorRole.value,
+                        pointId = point.id,
+                        pointName = point.name,
+                        assetId = asset.id,
+                        assetCode = asset.code,
+                        assetType = asset.type,
+                        visitType = s.visitType,
+                        equipmentStatus = s.equipmentStatus,
+                        observations = s.observations.trim(),
+                        photoUri = s.photoUri,
+                        latitude = s.latitude!!,
+                        longitude = s.longitude!!,
+                        locationAccuracyMeters = s.locationAccuracyMeters,
+                        distanceToPointMeters = s.distanceToPointMeters ?: Float.MAX_VALUE,
+                        presenceVerified = s.presenceVerified,
+                        timestamp = System.currentTimeMillis()
+                    )
                 )
-            )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _form.update {
+                    it.copy(saveError = "No se pudo guardar la visita. Inténtalo nuevamente.", saveSuccess = false)
+                }
+                return@launch
+            }
             _form.update { it.copy(isSaving = false, saveSuccess = true) }
             onSaved(id)
+        }.invokeOnCompletion {
+            _form.update { it.copy(isSaving = false) }
+            saveInProgress.set(false)
         }
     }
 
@@ -243,6 +277,12 @@ class VisitViewModel(
     }
 
     fun observeVisit(id: Long) = repository.observeVisit(id)
+
+    fun observeVisitDetail(id: Long) = repository.observeVisit(id)
+        .map<VisitEntity?, VisitDetailUiState> { visit ->
+            if (visit == null) VisitDetailUiState.NotFound else VisitDetailUiState.Found(visit)
+        }
+        .onStart { emit(VisitDetailUiState.Loading) }
 
     fun approveVisit(id: Long) {
         viewModelScope.launch {
