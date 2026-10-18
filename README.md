@@ -22,6 +22,7 @@ Desde la raíz del proyecto, ejecutar una sola vez:
 
 ```bash
 printf ".gradle/\n.idea/\n.kotlin/\napp/build/\n" >> .git/info/exclude
+```
 
 ## Objetivo
 MVP móvil para registrar y verificar visitas en terreno asociadas a vitrinas freezer y conservadoras,
